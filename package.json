@@ -1,0 +1,53 @@
+{
+  "name": "dsh-design-sketch",
+  "version": "0.1.0",
+  "description": "DSH host plugin: the design_sketch tool — generate front-end UI design mockups (full pages or single components like a button) with Qwen-Image 3.0 Pro, download the PNG into the workspace for the user to review, and revise a previous version in place (I2I) instead of re-rolling.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./core": "./core.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "core.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "ui-design",
+    "qwen-image",
+    "dashscope",
+    "mockup"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/e2e.mjs",
+    "test:stubs": "node tools/make-test-stubs.mjs",
+    "audit:leaks": "node test/audit-leaks.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/<你的 GitHub 用户名>/dsh-design-sketch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/<你的 GitHub 用户名>/dsh-design-sketch/issues"
+  },
+  "homepage": "https://github.com/<你的 GitHub 用户名>/dsh-design-sketch#readme"
+}

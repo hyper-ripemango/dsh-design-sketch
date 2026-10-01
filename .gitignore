@@ -1,0 +1,21 @@
+# 依赖与产物
+node_modules/
+*.log
+
+# 例外：测试替身必须入库，否则 clone 之后 npm test 跑不起来
+# （这两个包是本仓库手写的极简实现，不是第三方依赖）
+!test/node_modules/
+!test/node_modules/@deepseek-ai/
+
+# 密钥与凭据：绝不入库
+dashscope-key.txt
+*-key.txt
+.env
+.env.*
+
+# 本机私有替换表（只用于生成发布副本）
+.release-rules.json
+
+# 设计图产物（若把 outputDir 指到包内）
+demo/
+design/

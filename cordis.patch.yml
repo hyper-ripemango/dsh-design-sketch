@@ -1,0 +1,30 @@
+# dsh-design-sketch bundle patch — 故意留空。
+#
+# 不要在这里给本插件加 `insert` 行。
+#
+# DSH loader 会读取每个已加载插件包的 patch 文件，而 `insert` 是**原样套用**的：
+# 它不会与 profile 自己的 cordis.patch.yml 里同 id 的行做合并。两边都声明同一条
+# 会得到两个共享同一 id 的 loader entry，整棵树加载失败：
+#
+#   Error: dsh: plugin tree failed to load: failed to apply loader entry include
+#   (cordis:include): failed to validate loader entry dsh-design-sketch
+#   (dsh-design-sketch): duplicate loader entry id: dsh-design-sketch
+#
+# 唯一权威的那一行在 profile 层：
+#
+#   %DSH_HOME%\profiles\desktop\cordis.patch.yml
+#     - insert:
+#         - id: dsh-design-sketch
+#           name: 'dsh-design-sketch'
+#           config:
+#             keyFile: '<密钥文件>'
+#             outputDir: '<工作区>\demo\design'
+#             workspaceRoot: '<工作区>'
+#             region: 'cn-beijing'
+#             model: 'qwen-image-3.0-pro'
+#
+# 两个约束让这个文件保持现状：
+#   1. 它必须存在 —— 声明了 `dsh.bundle.patch` 的包在文件缺失时会硬报错。
+#   2. 它必须解析成顶层**数组** —— 只有注释的文件解析为 `null`，会被拒绝：
+#      "must be a top-level YAML array of loader patch entries"。所以下面这个显式空表。
+[]
