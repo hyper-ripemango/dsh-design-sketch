@@ -1024,7 +1024,7 @@ export function buildVersionMeta(input) {
     version, kind, title, prompt, userPrompt, model, region, aspect, size, n, seed,
     promptExtend, enableThinking, watermark, negative, references, basedOn, taskId,
     requestId, apiMode, width, height, bytes, elapsedSec, costCny, outputs,
-    workspaceRoot, files, createdAt, actualPrompt,
+    workspaceRoot, files, createdAt, actualPrompt, promptSource,
   } = input ?? {}
   return {
     schema: 'dsh-design-sketch/version@1',
@@ -1034,6 +1034,9 @@ export function buildVersionMeta(input) {
     kind,
     title,
     prompt,
+    // 提示词来源：`template` = 模板自动合成；`user-reviewed` = 用户审过并改过的那一版。
+    // 记下来是为了回答"这张图当时到底发了什么、是谁定的" —— 出问题时这是第一手证据。
+    promptSource: promptSource ?? 'template',
     ...(typeof actualPrompt === 'string' && actualPrompt.length > 0 ? { actualPrompt } : {}),
     userPrompt: String(userPrompt ?? ''),
     model,

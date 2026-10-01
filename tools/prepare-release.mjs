@@ -18,7 +18,7 @@
  *   node tools/prepare-release.mjs [--out <目录>]
  */
 
-import { readFile, writeFile, readdir, copyFile, mkdir, lstat, rm } from 'node:fs/promises'
+import { readFile, writeFile, readdir, copyFile, mkdir, lstat, rm, rename } from 'node:fs/promises'
 import { join, relative, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,6 +32,17 @@ const OUT = outIndex >= 0 && args[outIndex + 1] !== undefined
 
 /** 不进包的东西。 */
 const SKIP = new Set(['node_modules', '.git', 'delivery-audit.log', '.release-rules.json'])
+
+/**
+ * 用户向 README 的来源文件。
+ *
+ * 插件根目录的 `README.md` 是**开发者向**的长文档（五条坑、内部实现细节）；
+ * 发布给用户看的应该是 `README-user.md`（短、按使用顺序组织）。
+ * 打包时把它改名成包里的 `README.md`，开发者文档另存为 `DEVELOPMENT.md` ——
+ * 两边都留，读者各取所需。
+ */
+const USER_README_SOURCE = 'README-user.md'
+const USER_README_TARGET = 'README.md'
 
 /**
  * 例外：这些 `node_modules` 路径必须随包发布。
@@ -177,11 +188,40 @@ async function sanitize(dir) {
 
 // ------------------------------------------------------------------ 执行
 
+// 保留输出目录里已有的 `.git`。
+// 早期版本直接 rm -rf 整个输出目录，把 git 历史一起删了 —— 结果是发布副本与远端
+// 脱钩，下次只能强推覆盖远端提交。这个坑真踩过，所以这里显式保住它。
+const gitDir = join(OUT, '.git')
+// 藏到输出目录**外面**：藏在里面会被紧随其后的 rm -rf 一起删掉（这个坑真踩过）
+const stashDir = `${OUT}.git-stash`
+const hadGit = await lstat(gitDir).then(() => true).catch(() => false)
+if (hadGit) {
+  await rm(stashDir, { recursive: true, force: true })
+  await rename(gitDir, stashDir)
+}
+
 await rm(OUT, { recursive: true, force: true })
 await mkdir(OUT, { recursive: true })
+if (hadGit) {
+  await rename(stashDir, gitDir)
+  console.log('已保留既有 .git（发布副本继续与远端保持同一历史）')
+}
+
 await copyTree(SOURCE, OUT)
 await writeFile(join(OUT, '.gitignore'), GITIGNORE, 'utf8')
 await writeFile(join(OUT, '.gitattributes'), GITATTRIBUTES, 'utf8')
+
+// 用户向 README 上位：README-user.md → README.md，原开发者 README 让位给 DEVELOPMENT.md
+const userReadmePath = join(OUT, USER_README_SOURCE)
+const targetReadmePath = join(OUT, USER_README_TARGET)
+try {
+  await copyFile(userReadmePath, targetReadmePath)
+  await rm(userReadmePath, { force: true })
+  console.log(`README：已用 ${USER_README_SOURCE} 覆盖包内 ${USER_README_TARGET}`)
+} catch {
+  console.error(`警告：没找到 ${USER_README_SOURCE}，包内 README 仍是开发者向版本。`)
+}
+
 const changed = await sanitize(OUT)
 
 // package.json：补测试脚本与仓库元数据

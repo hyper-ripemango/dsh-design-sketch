@@ -482,6 +482,7 @@ export function createTool(ctx, config) {
     // fail() 自身不是 async，但它的调用点都在 async 的 execute 里，返回值就是 Promise。
     return await deliver({
       ok: false,
+      stage: 'failed',
       designDir: extra.files?.[0] ?? '',
       workspaceRoot: state.workspaceRoot,
       version: '—',
@@ -504,9 +505,11 @@ export function createTool(ctx, config) {
     name: 'design_sketch',
     description: [
       '生成前端 UI 设计效果图（T2I）或基于参考图改图（I2I），并把 PNG 与元数据落到工作目录，供用户预览。',
-      '三种用法：① 新增页面/组件、或用户要"先看效果图"时，用 title+prompt 出一版；② 用户提了修改意见，传 reviseOf="v01" 以上一版为参考图局部改（整体不变，只改指定处）；③ 手上有截图/竞品图，用 reference 传本地路径或 URL 出变体。',
+      '**必须先出提示词草稿让用户过目**：先用 `askOnly: true` 调用——它会返回完整的提示词与反向提示词、不生成图片、不花钱；把提示词原样贴给用户，问他要不要改、要不要换一版，等他明确同意后再去掉 `askOnly` 真正出图。',
+      '四种用法：① 首次出图，先 `askOnly: true` 看稿 → 用户确认后去掉它生成；② 用户提了修改意见，传 reviseOf="v01" 以上一版为参考图局部改（整体不变，只改指定处）；③ 手上有截图/竞品图，用 reference 传本地路径或 URL 出变体；④ 用户改过提示词，用 `promptOverride` 把改完的完整文案传回落下去。',
       'kind 决定提示词模板与默认画幅：screen（整页布局）/ component（单个组件含全部交互状态，做按钮就选它）/ icon / flow（多屏流程）/ asset（插画素材）/ free。',
       '注意：生成一张通常 1-3 分钟；想在图顶部加版本信息条用 banner。返回正文含图片相对路径，可直接展示给用户。',
+      '**用户没有明确同意之前，不要跳过草稿直接生成。**',
     ].join(''),
     parameters: {
       title: {
@@ -577,6 +580,16 @@ export function createTool(ctx, config) {
         type: 'string',
         description: '显式指定设计目录名；留空则用 `<title>_<日期>`。同一目录下的多个版本构成迭代链。',
       },
+      askOnly: {
+        type: 'boolean',
+        description:
+          '只出提示词草稿、不出图、不收费。先用它把提示词原样交给用户确认或修改，拿到明确同意后再去掉它去生成。**用户没点头之前不要去掉。**',
+      },
+      promptOverride: {
+        type: 'string',
+        description:
+          '用户改过的完整提示词。传了它就不再套模板、直接原样使用——用于把"用户审完稿的最终文案"落下去。',
+      },
     },
     output: {
       schema: {
@@ -584,6 +597,7 @@ export function createTool(ctx, config) {
         additionalProperties: false,
         properties: {
           ok: { type: 'boolean', required: true },
+          stage: { type: 'string', required: true, enum: ['draft', 'generated', 'failed', 'pending'] },
           designDir: { type: 'string', required: true },
           workspaceRoot: { type: 'string', required: true },
           version: { type: 'string', required: true },
@@ -606,6 +620,8 @@ export function createTool(ctx, config) {
           taskId: { type: 'string' },
           taskPending: { type: 'boolean' },
           basedOn: { type: 'string' },
+          promptDraft: { type: 'string' },
+          negativeDraft: { type: 'string' },
           content: { type: 'json', required: true },
         },
       },
@@ -640,7 +656,7 @@ export function createTool(ctx, config) {
 
       // 落盘位置
       if (!outputRootResult.ok) {
-        return await fail('未配置 outputDir：请在插件配置里指定设计图落盘根目录（例如 C:\\dogx\\demo\\design）', {
+        return await fail('未配置 outputDir：请在插件配置里指定设计图落盘根目录（例如 <你的工作区>\\demo\\design）', {
           kind,
           title,
           hint: 'DSH 是长驻进程，cwd 不是会话工作区，所以这里要求显式配置而不是猜一个位置。',
@@ -649,6 +665,8 @@ export function createTool(ctx, config) {
       const dirName = String(args?.designDir ?? '').trim() || designDirName(title)
       const designDir = join(outputRoot, dirName)
       await ensureDir(designDir)
+      // 提前取出：草稿闸门要用它判断 T2I / I2I，生成路径也要用它读上一版图
+      const reviseRaw = String(args?.reviseOf ?? '').trim()
 
       // 密钥
       const credentials = await resolveCredentials({ callKey: args?.apiKey ?? '', config })
@@ -668,16 +686,23 @@ export function createTool(ctx, config) {
       state.apiMode = String(config.apiMode)
       const knownModel = MODELS[model]
       const negative = isNonEmpty(args?.negative) ? String(args.negative).trim() : defaultNegativePrompt(kind)
-      const promptText = composePrompt({
-        kind,
-        prompt: userPrompt,
-        title,
-        style: args?.style,
-        constraints: toArray(args?.constraints),
-        negative,
-      })
+      // 提示词：默认由模板合成；`promptOverride` 用来落"用户改过的那一版"。
+      // 这条路径的存在意义 —— 用户看完草稿改了词，工具必须能**原样**使用它，
+      // 而不是又拿模板把改动覆盖掉。
+      const promptText = isNonEmpty(args?.promptOverride)
+        ? String(args.promptOverride).trim()
+        : composePrompt({
+            kind,
+            prompt: userPrompt,
+            title,
+            style: args?.style,
+            constraints: toArray(args?.constraints),
+            negative,
+          })
       const quality = String(args?.quality ?? config.quality ?? '1k').toLowerCase() === '2k' ? '2k' : '1k'
       const aspect = isNonEmpty(args?.aspect) ? String(args.aspect).trim() : KIND_DEFAULT_ASPECT[kind] ?? '16:9'
+
+      // 尺寸先算出来：草稿与生成两条路径共用同一个结果，用户看到的尺寸就是最终出图的尺寸。
       const configSize = isNonEmpty(config.size) ? String(config.size).trim().replace('x', '*') : ''
       let sizeText = isNonEmpty(args?.size) ? String(args.size).trim().replace('x', '*') : configSize
       let pixelWidth = 0
@@ -699,6 +724,77 @@ export function createTool(ctx, config) {
           return await fail(`size 超出允许范围：单边需在 512–2048（收到 ${pixelWidth}×${pixelHeight}）`, { kind, title })
         }
       }
+
+      // ─────────────────────────────────────────────────────────────────
+      // 草稿闸门：只把提示词交回去，**不花一分钱**
+      //
+      // 为什么要有这一步：以前工具被调用就直接出图，用户根本没机会在"钱花出去之前"
+      // 看一眼究竟发了什么提示词。现在 agent 必须先走 `askOnly: true`，
+      // 把提示词原样贴给用户确认或修改，拿到明确答复后才真正生成。
+      //
+      // 放在密钥检查**之前**：光看提示词不需要密钥，没配 key 也能先审稿。
+      // ─────────────────────────────────────────────────────────────────
+      if (args?.askOnly === true) {
+        const resetNote = isNonEmpty(args?.promptOverride)
+          ? '本次使用的是**你（或用户）改过的提示词**，不再套用模板。'
+          : '以下提示词由模板自动合成，可以直接改任意一句后再生成。'
+        const preview = [
+          '## 提示词草稿（尚未生成，未计费）',
+          '',
+          `- 设计对象：**${title}**（${kind}｜${PROMPT_TEMPLATES[kind]?.label ?? kind}）`,
+          `- 画幅与尺寸：${aspect}｜${sizeText || '由模型自选'}｜档位 ${quality}（约 ${quality === '2k' ? '¥0.5' : '¥0.25'}/张）`,
+          `- 模型：${model}｜地域：${config.region}`,
+          resetNote.length > 0 ? `- ${resetNote}` : '',
+          '',
+          '```text',
+          promptText,
+          '```',
+          '',
+          '### 反向提示词（告诉模型"不要画什么"）',
+          '',
+          '```text',
+          negative,
+          '```',
+          '',
+          '**下一步（给 agent 的操作指引）**',
+          '',
+          '1. 把上面这段提示词**原样**展示给用户，并问一句：就按这个生成吗？要改哪一句？',
+          '2. 用户要改 → 按他的意思改好文案后，用 `promptOverride` 传回**改完的完整提示词**再调用（可带 `askOnly: true` 再确认一轮）。',
+          '3. 用户要想挑一版 → 用不同的 `style` / `constraints` 再调几次 `askOnly: true`，把几版并排给用户选（这一步不花钱）。',
+          '4. 用户确认后 → 去掉 `askOnly` 直接调用，工具会真正出图（此时才计费）。',
+          '5. **用户没有明确同意之前，不要去掉 `askOnly` 去生成。**',
+        ]
+          .filter((line) => line !== '')
+          .join('\n')
+
+        return await deliver(
+          {
+            ok: true,
+            stage: 'draft',
+            designDir,
+            workspaceRoot,
+            version: '—',
+            kind,
+            title,
+            mode: reviseRaw.length > 0 ? 'I2I' : 'T2I',
+            model,
+            apiMode: String(config.apiMode),
+            aspect,
+            size: sizeText || 'auto',
+            elapsedSec: 0,
+            estimatedCostCny: 0,
+            promptDraft: promptText,
+            negativeDraft: negative,
+            basedOn: reviseRaw.length > 0 ? reviseRaw : undefined,
+            imagePaths: [],
+            metaPath: '',
+            indexPaths: [],
+            content: [{ type: 'text', text: preview }],
+          },
+          { auditDir: designDir, stage: 'draft' },
+        )
+      }
+
       const n = Math.max(1, Math.min(6, Math.floor(Number(args?.n ?? config.n ?? 1) || 1)))
 
       // 模型能力先于参考图解析：这样"用纯文生图模型做 I2I"这类配置错误会在伸手
@@ -724,7 +820,6 @@ export function createTool(ctx, config) {
       const imageItems = []
       const refDescriptions = []
       let basedOn = null
-      const reviseRaw = String(args?.reviseOf ?? '').trim()
       if (reviseRaw.length > 0) {
         const base = await resolveBaseImage(designDir, reviseRaw)
         if (!base.ok) return await fail(`reviseOf 解析失败：${base.error}`, { kind, title, files: [designDir] })
@@ -794,6 +889,7 @@ export function createTool(ctx, config) {
         if (call.pending === true) {
           return deliver({
             ok: false,
+            stage: 'pending',
             designDir,
             workspaceRoot,
             version: '—',
@@ -892,6 +988,7 @@ export function createTool(ctx, config) {
         title,
         prompt: promptText,
         userPrompt,
+        promptSource: isNonEmpty(args?.promptOverride) ? 'user-reviewed' : 'template',
         actualPrompt: call.actualPrompt,
         model,
         region: config.region,
@@ -961,6 +1058,7 @@ export function createTool(ctx, config) {
 
       return deliver({
         ok: true,
+        stage: 'generated',
         designDir,
         workspaceRoot,
         version: tag,
@@ -1006,11 +1104,17 @@ export function apply(ctx, rawConfig) {
         : [
             '当任务涉及**前端界面设计**——新增一个页面、一个像样的 UI 组件（按钮、卡片、表单、空状态…），或用户明确说"先看效果图/设计稿"——先判断是否需要视觉基准，再决定要不要写代码。',
             '',
-            '需要基准时用 `design_sketch` 生成效果图，等用户看过并确认后再写前端实现；用户提修改意见时，用 `reviseOf` 传上一版版本号做局部修改，而不是重新生成一版。单个按钮这类小件同样适用：`kind: "component"` 会要求模型画出默认/悬停/按下/禁用等全部状态。',
-            '',
             '判定条件（不是每次都生成）：① 新增页面或新组件，且设计目录下没有同类基准图 → 生成；② 纯逻辑改动、改文案、改数据流，或已有基准图可参照 → 不生成；③ 用户明说"不用给我看图" → 不生成；④ 用户已有截图/竞品图 → 用 `reference` 直接出变体。',
             '',
-            '生成一张通常 1-3 分钟、约 ¥0.25–0.5，所以不要一次生成多个方案，也不要在用户没要求时反复出图。工具返回的正文里带着图片相对路径，把它展示给用户之后再继续。',
+            '**出图的固定两步流程（必须遵守）**：',
+            '第一步——用 `askOnly: true` 调用 `design_sketch`：它只返回提示词与反向提示词，**不生成图片、不花钱**。把提示词**原样**贴给用户（用代码块，别改写），问一句「就按这个生成吗？哪句要改？」。',
+            '用户想挑一版时，用不同的 `style` / `constraints` 多调几次 `askOnly: true`，把几版并排给他选——这一步同样不花钱。',
+            '第二步——用户明确同意后，去掉 `askOnly` 再调用，此时才真正出图并计费。用户改过提示词的话，把他的最终文案用 `promptOverride` 传回去。',
+            '**用户没有明确同意之前，绝不要跳过第一步直接生成**；也不要因为"用户可能觉得麻烦"就替他做决定。',
+            '',
+            '用户看过图之后：提修改意见就用 `reviseOf` 传上一版版本号做局部修改（而不是重新生成一版）。单个按钮这类小件同样适用：`kind: "component"` 会要求模型画出默认/悬停/按下/禁用等全部状态。',
+            '',
+            '生成一张通常 1-3 分钟、约 ¥0.25–0.5。工具返回的正文里带着图片相对路径，把它展示给用户之后再继续。',
           ].join('\n'),
   })
 

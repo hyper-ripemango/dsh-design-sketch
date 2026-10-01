@@ -252,6 +252,7 @@ eq('用例1 元数据记录用户需求', meta.userPrompt, '展示专辑封面�
 eq('用例1 元数据记录模型', meta.model, 'qwen-image-3.0-pro')
 eq('用例1 元数据记录计费档', meta.result.costCny, 0.25)
 eq('用例1 元数据记录实际档位', meta.result.tier, '1k')
+eq('用例1 提示词来源=模板', meta.promptSource, 'template')
 check('用例1 元数据不含密钥', !JSON.stringify(meta).includes(GOOD_KEY))
 check('用例1 元数据里没有 Bearer', !JSON.stringify(meta).includes('Bearer'))
 
@@ -265,6 +266,62 @@ check('用例1 正文含 Markdown 图片', /!\[.+?\]\(<.+?>\)/.test(content))
 check('用例1 正文里的图片路径是工作区相对路径', content.includes('demo/design/'))
 check('用例1 正文提示先给用户看图', content.includes('用户看到图之前不要开始写前端代码'))
 check('用例1 正文报价', content.includes('¥0.25'))
+
+// ------------------------------------------- 用例 1.5：草稿闸门（不花钱）
+
+// 这是"先看提示词再生成"的核心承诺，必须能被证明：
+// 不产生任何 HTTP 请求、不计费、提示词原样可见、且明确标注"尚未生成"。
+const postsBeforeDraft = requests.filter((r) => r.method === 'POST').length
+const draft = await tool.execute({
+  title: '草稿闸门测试页',
+  prompt: '一个测试用的页面描述',
+  kind: 'screen',
+  style: '极简、浅色',
+  constraints: ['不要侧栏'],
+  askOnly: true,
+})
+
+eq('草稿 ok=true', draft.ok, true)
+eq('草稿 stage=draft', draft.stage, 'draft')
+eq('草稿不计费', draft.estimatedCostCny, 0)
+eq('草稿不产出图片', draft.imagePaths.length, 0)
+eq('草稿不写版本号', draft.version, '—')
+check('草稿返回了完整提示词', typeof draft.promptDraft === 'string' && draft.promptDraft.length > 100)
+check('草稿提示词含模板骨架', draft.promptDraft.includes('前端界面视觉稿'))
+check('草稿提示词含用户输入', draft.promptDraft.includes('一个测试用的页面描述'))
+check('草稿提示词含约束', draft.promptDraft.includes('- 不要侧栏'))
+check('草稿带出反向提示词', typeof draft.negativeDraft === 'string' && draft.negativeDraft.length > 10)
+const draftText = draft.content[0].text
+check('草稿正文标注"未计费"', draftText.includes('未计费'))
+check('草稿正文用代码块原样给出提示词', draftText.includes('```text') && draftText.includes(draft.promptDraft))
+check('草稿正文给出"下一步"操作指引', draftText.includes('原样') && draftText.includes('promptOverride'))
+check('草稿正文提醒未经同意不要生成', draftText.includes('不要去掉 `askOnly`'))
+eq('草稿没有发出任何 API 请求', requests.filter((r) => r.method === 'POST').length, postsBeforeDraft)
+const draftDirFiles = await readdir(join(outputDir, `草稿闸门测试页_${dateStamp()}`)).catch(() => [])
+check('草稿不落 PNG', !draftDirFiles.some((f) => f.endsWith('.png')), draftDirFiles.join(', '))
+
+// 用户改过提示词 → 用 promptOverride 原样落下，而不是被模板覆盖
+const EDITED = `${draft.promptDraft}\n\n【用户补充】每个卡片右下角加一个收藏图标。`
+const reviewed = await tool.execute({
+  title: '草稿闸门测试页',
+  prompt: '一个测试用的页面描述',
+  promptOverride: EDITED,
+  askOnly: true,
+})
+check('改过的提示词被原样使用', reviewed.promptDraft === EDITED, '被模板覆盖了')
+const confirmed = await tool.execute({
+  title: '草稿闸门测试页',
+  prompt: '一个测试用的页面描述',
+  promptOverride: EDITED,
+})
+eq('确认后真正生成', confirmed.ok, true)
+eq('确认后 stage=generated', confirmed.stage, 'generated')
+const confirmedMeta = JSON.parse(await readFile(confirmed.metaPath, 'utf8'))
+eq('确认后计费', confirmedMeta.result.costCny, 0.25)
+eq('元数据记录提示词来源=用户审过', confirmedMeta.promptSource, 'user-reviewed')
+check('元数据里存的是用户那一版提示词', confirmedMeta.prompt === EDITED)
+const confirmedBody = createdBodies[createdBodies.length - 1]
+check('真正发给模型的是用户那一版', confirmedBody.input.messages[0].content[0].text === EDITED)
 
 // 请求体形状：这是本插件最核心的契约，逐条对官方文档
 const sentBody = createdBodies[0]
@@ -298,7 +355,13 @@ eq('用例2 模式', second.mode, 'I2I')
 eq('用例2 记录基于 v01', second.basedOn, 'v01')
 eq('用例2 复用同一目录', second.designDir, first.designDir)
 
-const i2iBody = createdBodies[1]
+// 按内容查找，而不是按 "第几个请求" —— 用例增删时索引会漂，按内容找不会脆断。
+const bodyOf = (predicate) => {
+  const found = createdBodies.find(predicate)
+  if (found === undefined) throw new Error('没找到符合该特征的请求体')
+  return found
+}
+const i2iBody = bodyOf((b) => b?.input?.messages?.[0]?.content?.length === 2)
 eq('I2I content = 图 + 文', i2iBody.input.messages[0].content.length, 2)
 eq('I2I 第一项是图片', Object.keys(i2iBody.input.messages[0].content[0])[0], 'image')
 check('I2I 图片是 base64 data URL', String(i2iBody.input.messages[0].content[0].image).startsWith('data:image/png;base64,'))
@@ -328,7 +391,7 @@ eq('用例3 2K 费用', component.estimatedCostCny, 0.5)
 const meta3 = JSON.parse(await readFile(component.metaPath, 'utf8'))
 eq('用例3 元数据档位与工具返回一致', meta3.result.tier, component.imageTier)
 eq('用例3 版本从 v01 起（新目录）', component.version, 'v01')
-const componentBody = createdBodies[2]
+const componentBody = bodyOf((b) => b?.input?.messages?.[0]?.content?.[0]?.text?.includes('生成一张 UI 组件的设计稿'))
 check('component 模板要求画出状态', componentBody.input.messages[0].content[0].text.includes('禁用'))
 check('component 尺寸被算成 1:1', /^(\d+)\*(\d+)$/.test(componentBody.parameters.size))
 check('component 画幅接近正方', Math.abs(Number(componentBody.parameters.size.split('*')[0]) - Number(componentBody.parameters.size.split('*')[1])) <= 32)
