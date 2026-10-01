@@ -147,7 +147,7 @@ foreach ($f in 'index.mjs','core.mjs','guard.mjs','package.json','cordis.patch.y
 
 ---
 
-## 安装（本机已装好）
+## 安装
 
 | 位置 | 文件 | 作用 |
 | --- | --- | --- |
@@ -284,7 +284,7 @@ GET  {host}/api/v1/tasks/{task_id}                              ← 每 3s 一�
 
 ---
 
-## 计费与限流
+## 计费与限流(针对千问image3pro）
 
 | 项 | 值（华北2 北京） |
 | --- | --- |
@@ -325,29 +325,6 @@ node test\verify-real.mjs --yes   # 真出一张图（约 ¥0.25）
 > `node_modules/` 被 `.gitignore` 排除，所以 clone 之后**必须先跑 `npm run test:stubs`**
 > 把替身接回插件根（建 junction，无需管理员），否则 `npm test` 会报模块找不到。
 
----
-
-## 发布与打包
-
-改完插件要发版时，用仓库自带的两个工具，**不要让密钥或个人路径混进包里**：
-
-```powershell
-node tools\prepare-release.mjs        # 生成清洗后的发布副本
-node test\audit-leaks.mjs --dir <发布副本>   # 复核：必须 0 命中
-```
-
-`tools/prepare-release.mjs` 做四件事：
-
-1. **复制到独立目录**（不动工作副本），跳过 `node_modules`、`.git`、本地日志
-2. 把本机路径（`<插件目录>`/`<DSH_HOME>`/`<工作区>`/`<密钥文件>`）与 GitHub 用户名换成**占位符**
-3. 生成包内 `.gitignore`（忽略 `node_modules/`、`*-key.txt`、`.env*`、`*.log`）
-4. 在 `package.json` 里补齐 `test` / `test:stubs` / `audit:leaks` 脚本与仓库元数据
-
-**发版前的硬性检查**（缺一不可）：
-
-- `node test/audit-leaks.mjs` → **0 命中**（它会比对真实 key 的完整明文，只报文件与行号，不回显值）
-- 配置文件里的 `apiKey` / `keyFile` / `cookie` 等凭据字段**全部为空**
-- 包内不出现任何真实密钥文件（`dashscope-key.txt`、`*-key.txt`、`.env*`）
 
 ---
 
